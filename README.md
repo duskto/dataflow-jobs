@@ -1,223 +1,221 @@
 # DataFlow Jobs
 
-基于 Python、FastAPI、SQLAlchemy、Celery 的 CSV 后台处理平台。支持有序合并、按字段去重、Decimal 分组求和，以及任务查询、执行事件、下载、重试和取消。提供中文网页和 OpenAPI 文档。
+一个使用 Python 构建的 CSV 异步处理平台。上传文件、配置处理步骤后，任务由独立 Worker 在后台执行；通过中文网页或 REST API 查看状态、追踪执行事件并下载结果。
 
-![工作台](docs/screenshots/desktop.png)
+适用于 CSV 批量合并、订单去重、按地区汇总金额等场景，也可用于学习任务调度、故障恢复和结果一致性的实现。依赖由 **uv** 管理，支持本机启动与 Docker Compose 部署。
 
-## 用 uv 在本机启动
+## 功能概览
 
-需要 uv 和 Python 3.12+；项目 `.python-version` 固定为 3.13，`uv.lock` 锁定完整依赖。uv 可自动下载对应 Python。
+| 能力 | 已实现内容 |
+| --- | --- |
+| 数据处理 | 多文件有序合并、指定字段去重、基于 Decimal 的分组求和 |
+| 任务管理 | 异步提交、分页查询、执行事件、取消、自动重试、失败任务手动重试 |
+| 执行可靠性 | 幂等提交、事务 outbox、原子领取、租约与心跳、过期任务恢复、结果发布保护 |
+| 文件管理 | 上传大小与摘要记录、独立结果文件、输入压缩归档、归档复用、孤儿文件清理 |
+| 运行监控 | 页面运行概况、组件心跳、队列与耗时指标、Prometheus、Alertmanager |
+| 交互方式 | 中文响应式网页、REST API、OpenAPI 交互文档、命令行演示脚本 |
+
+技术栈：Python · FastAPI · Pydantic · SQLAlchemy · Alembic · Celery · Redis · PostgreSQL。网页使用 Jinja2 和原生 JavaScript，无需单独构建前端。
+
+## 快速开始
+
+### 本机运行
+
+准备好 Git 和 uv。项目支持 Python 3.12+，默认通过 `.python-version` 使用 Python 3.13，uv 可自动下载对应解释器。
 
 ```bash
+git clone https://github.com/duskto/dataflow-jobs.git
+cd dataflow-jobs
 uv sync --frozen
 cp .env.example .env
 uv run python scripts/dev.py
 ```
 
-打开 **http://127.0.0.1:8000**；API 文档在 **http://127.0.0.1:8000/docs**。脚本先执行 Alembic 迁移，再启动 API、dispatcher、maintenance、两个独立 Worker 进程；Ctrl+C 会结束这组进程。API 不执行 CSV 计算。
+启动脚本自动执行数据库迁移，并启动 API、调度进程、维护进程及两个独立 Worker。默认使用 SQLite，不需要 Redis 或 Docker；按 `Ctrl+C` 结束这组进程。
 
-本机默认使用 SQLite + 数据库轮询 Worker，不需要 Redis 或 Docker，适合体验和小规模演示。可使用 `--port 8001 --workers 4` 调整端口和 Worker 数量。实际部署使用下方 PostgreSQL/Celery 模式。
+| 入口 | 地址 |
+| --- | --- |
+| 网页工作台 | http://127.0.0.1:8000 |
+| API 文档 | http://127.0.0.1:8000/docs |
+| 就绪检查 | http://127.0.0.1:8000/api/v1/health/ready |
 
-另开终端验证完整 HTTP 流程：
+需要更换端口或调整并发时：
+
+```bash
+uv run python scripts/dev.py --port 8001 --workers 4
+```
+
+### 完成第一个任务
+
+在工作台上传 `samples/january.csv` 和 `samples/february.csv`，保留默认的“合并 → 按 order_id 去重 → 按 region 汇总 amount”流程，提交后等待成功并下载结果。
+
+也可以另开终端运行完整演示：
 
 ```bash
 uv run python scripts/demo.py
-# 如果使用其他端口：
+# 服务使用其他端口时
 uv run python scripts/demo.py --url http://127.0.0.1:8001
 ```
 
-脚本会上传 `samples/january.csv` 和 `samples/february.csv`、重复提交相同幂等键、等待后台处理、下载并对照 `samples/expected.csv`。页面也可直接上传这两个文件，使用默认三步流程。
+脚本会验证上传、幂等提交、后台执行和下载，并将结果与 `samples/expected.csv` 对照。若服务启用了令牌，运行脚本时需在环境变量中提供相同的 `DF_API_TOKEN`；该脚本不会自行读取 `.env`。
 
-## Compose 部署
+## Docker Compose 部署
 
-需要 Docker Engine 和 Compose v2；请先停止占用 8000 端口的本机服务。
+在仓库根目录执行，需要 Docker Engine 和 Compose v2。默认端口与本机启动相同，请先停止占用 8000 端口的服务。
 
 ```bash
 docker compose up --build -d
 docker compose ps
-uv run python scripts/demo.py
 ```
 
-包含 api、worker、dispatcher、maintenance、postgres、redis 和一次性 migrate 服务。依赖健康检查通过后，migrate 执行迁移，其他服务等待迁移成功再启动。worker 默认有两个 Celery 子进程。
+Compose 使用 **PostgreSQL + Redis + Celery**，并启动 API、dispatcher、maintenance 和一次性 migrate 服务。数据库就绪后先执行迁移，应用服务等待迁移成功再启动。每个 Worker 容器默认包含两个计算子进程。
 
-可选启用持续监控：
+```bash
+# 使用其他 API 端口
+DF_API_PORT=8001 docker compose up -d
+
+# 扩展至两个 Worker 容器，共四个计算子进程
+docker compose up -d --scale worker=2
+
+# 查看执行与派发日志
+docker compose logs -f worker dispatcher
+
+# 停止服务并保留数据卷
+docker compose down
+```
+
+自定义的 Compose 变量建议保存在 `.env` 中，使后续命令使用同一组配置。API 默认仅绑定 `127.0.0.1`，PostgreSQL 和 Redis 不发布主机端口。数据库账号为本地演示配置；对外部署时需配置数据库凭据、`DF_API_TOKEN`、反向代理和 HTTPS。
+
+### 监控与告警
 
 ```bash
 docker compose --profile monitoring up -d
 ```
 
-Prometheus 位于 http://127.0.0.1:9090，Alertmanager 位于 http://127.0.0.1:9093。exporter 只在 Compose 内部网络暴露，无须把 API 令牌写进 Prometheus 配置。默认只在本地 UI 查看告警，不发送邮件或外部消息。页面“运行概况”无需启用此 profile，也会显示 Worker、排队情况和当前告警。
+- Prometheus：http://127.0.0.1:9090
+- Alertmanager：http://127.0.0.1:9093
 
-```bash
-# 增加 Worker 容器；每个容器有两个计算进程
-docker compose up -d --scale worker=2
-# 查看业务执行、派发日志
-docker compose logs -f worker dispatcher
-# 停止本项目服务，保留数据卷
-docker compose down
-```
+监控覆盖组件离线、Redis 不可用、任务排队超时、租约过期、失败率和维护异常。exporter 仅在容器网络内提供指标；默认 Alertmanager 只记录告警，不发送外部通知。未启用监控 profile 时，工作台仍可显示运行概况和当前异常。
 
-API 只绑定本机 `127.0.0.1:8000`。PostgreSQL/Redis 不映射到主机端口。Compose 中的数据库账号是固定的本地演示账号。对外使用前配置密码、反向代理、HTTPS 和 `DF_API_TOKEN`。页面的“演示账号令牌”会发送 `Authorization: Bearer …`，只保存在当前标签页；健康检查与首页公开。
+## API 使用
 
-## 配置与存储
+API 前缀为 `/api/v1`。配置 `DF_API_TOKEN` 后，业务接口需携带 `Authorization: Bearer <令牌>`；健康检查公开。完整请求与响应结构可在运行中的 `/docs` 查看。
 
-配置来自 `DF_` 环境变量或 `.env`。环境变量优先。修改环境配置后重启进程。
-
-| 配置 | 默认值 | 说明 |
-|---|---|---|
-| `DF_DATABASE_URL` | `sqlite:///./data/dataflow.db` | SQLAlchemy 数据库 URL |
-| `DF_STORAGE_ROOT` | `./data/storage` | 上传和结果存储根目录 |
-| `DF_EXECUTION_MODE` | `local` | `local` 或 `celery` |
-| `DF_REDIS_URL` | `redis://localhost:6379/0` | Celery broker |
-| `DF_API_TOKEN` | 空 | 可选的共享演示账号令牌 |
-| `DF_LEASE_SECONDS` | 30 | Worker 租约；心跳间隔为其 1/3 |
-| `DF_RETRY_BASE_SECONDS` | 2 | 指数退避基数，附加 0–25% 抖动 |
-| `DF_MAX_UPLOAD_BYTES` | 104857600 | 每个文件最多 100 MiB，实际读取计数 |
-| `DF_MAX_ROWS` | 1000000 | 所有输入文件累计数据行数 |
-| `DF_MAX_UNIQUE_KEYS` | 200000 | 每个去重步骤唯一键上限 |
-| `DF_MAX_GROUPS` | 100000 | 每个汇总步骤分组数上限 |
-| `DF_MAX_COLUMNS` | 200 | CSV 列数上限 |
-| `DF_MAX_FIELD_CHARS` | 1000000 | 单字段字符数上限 |
-| `DF_ORPHAN_GRACE_SECONDS` | 86400 | 孤儿对象清理宽限期，至少 1 小时 |
-| `DF_INPUT_ARCHIVE_DAYS` | 30 | 输入自上次提交使用起，闲置多少天后压缩归档 |
-| `DF_EVENT_ARCHIVE_DAYS` | 30 | 任务终态多少天后，将执行事件归档为 JSONL.gz |
-| `DF_MAINTENANCE_INTERVAL_SECONDS` | 3600 | 自动归档与孤儿清理间隔；启动时也执行一次 |
-| `DF_MAINTENANCE_BATCH_SIZE` | 100 | 每轮最多归档的输入/任务日志组数量 |
-| `DF_HEARTBEAT_INTERVAL_SECONDS` | 5 | Worker、dispatcher、maintenance 进程心跳间隔 |
-| `DF_HEARTBEAT_TIMEOUT_SECONDS` | 20 | 进程离线判断阈值 |
-| `DF_ALERT_QUEUE_AGE_SECONDS` | 120 | 最早排队任务告警阈值 |
-| `DF_ALERT_FAILURE_RATE` | 0.2 | 近一小时最终失败率阈值，排除取消 |
-| `DF_ALERT_FAILURE_MIN_JOBS` | 5 | 失败率告警最少完成任务样本数 |
-| `DF_DB_CONNECT_TIMEOUT_SECONDS` | 3 | PostgreSQL 连接超时 |
-| `DF_DB_STATEMENT_TIMEOUT_MS` | 5000 | PostgreSQL 单条语句超时 |
-
-本机数据库和文件在 `data/` 下；Compose 中 API 与 Worker 共用 `job-data` 卷 `/data/storage`，数据库使用 `postgres-data`，Redis AOF 使用 `redis-data`。文件名和路径都由服务端生成，API 不返回内部路径。上传请求在 multipart 解析前也有总字节限制（文件上限 + 1 MiB 协议开销），支持无 Content-Length 的上传。
-
-文件完整落盘并记录大小和摘要后为 READY；编码和 CSV 语义在任务执行时验证，非法 CSV 使任务明确失败。所有文件、任务、事件和结果查询受服务端固定 `owner_id` 限制；这是单演示账号，尚未提供用户注册/独立令牌映射。
-
-分别启动服务时：
-
-```bash
-uv run alembic upgrade head
-uv run uvicorn app.main:app --host 127.0.0.1 --port 8000
-# 另开终端
-uv run python -m app.scheduler.dispatcher
-uv run python -m app.scheduler.maintenance
-uv run python -m app.workers.local
-```
-
-Celery 模式设置 PostgreSQL URL、Redis URL 和 `DF_EXECUTION_MODE=celery`，然后把最后一条命令替换为：
-
-```bash
-uv run celery -A app.workers.celery_app:celery_app worker --loglevel=INFO --concurrency=2
-```
-
-## API 示例
-
-统一前缀 `/api/v1`。错误统一返回 `code`、`message`、`request_id`；响应头含 `X-Request-ID`。UUID 标识，时间使用带 UTC 时区的 ISO 8601。
+先上传文件：
 
 ```bash
 curl -F 'file=@samples/january.csv' http://127.0.0.1:8000/api/v1/files
 curl -F 'file=@samples/february.csv' http://127.0.0.1:8000/api/v1/files
 ```
 
-将响应中的两个 `file_id` 填入请求：
+将响应中的 `file_id` 填入任务请求。以下示例用于未配置令牌的默认环境：
 
 ```bash
 curl -X POST http://127.0.0.1:8000/api/v1/jobs \
   -H 'Content-Type: application/json' \
   -H 'Idempotency-Key: sales-demo-001' \
   -d '{
-    "input_file_ids": ["替换为第一个UUID", "替换为第二个UUID"],
+    "input_file_ids": ["替换为第一个文件的UUID", "替换为第二个文件的UUID"],
     "steps": [
-      {"type":"merge","schema_policy":"strict"},
-      {"type":"deduplicate","keys":["order_id"],"keep":"first"},
-      {"type":"aggregate","group_by":["region"],"sum":["amount"]}
+      {"type": "merge", "schema_policy": "strict"},
+      {"type": "deduplicate", "keys": ["order_id"], "keep": "first"},
+      {"type": "aggregate", "group_by": ["region"], "sum": ["amount"]}
     ],
-    "csv_options":{"encoding":"utf-8-sig","delimiter":","},
-    "max_attempts":3
+    "csv_options": {"encoding": "utf-8-sig", "delimiter": ","},
+    "max_attempts": 3
   }'
 ```
 
-| 方法 | 路径 | 行为 |
-|---|---|---|
-| POST | `/files` | 上传 CSV，201 |
-| GET | `/files/{id}` | 元信息 |
-| POST | `/jobs` | 创建任务，202；相同幂等键和内容返回同一任务，不同内容 409 |
-| GET | `/jobs?status=RUNNING&limit=20&offset=0` | 分页；limit ≤ 100，返回 next_offset |
-| GET | `/jobs/{id}` | 阶段、行数、错误、执行次数与 attempt 记录 |
-| POST | `/jobs/{id}/cancel` | 取消或标记取消请求 |
-| POST | `/jobs/{id}/retry` | 仅 FAILED 可创建新任务，保留 parent_job_id；支持幂等键 |
-| GET | `/jobs/{id}/events?after=0&limit=50` | 游标事件；单条最多 2000 字符 |
-| GET | `/jobs/{id}/result` | 成功后下载；未成功 409 |
-| GET | `/health/live` | 进程存活 |
-| GET | `/health/ready` | 数据库、迁移、存储及 Celery 模式 Redis 检查 |
-| GET | `/ops` | 运行概况、当前告警、归档巡检记录 |
-| GET | `/metrics` | Prometheus 状态、队列、耗时直方图、心跳和归档指标 |
-| GET | `/jobs/{id}/events/archive` | 下载归档日志；同样验证所属账号 |
+创建成功返回 `202` 和任务 `id`。使用该 ID 查询状态，成功后下载结果；结果尚未就绪时下载接口返回 `409`。同一幂等键和相同请求返回同一个任务，同一键配合不同请求返回 `409`。
 
-## CSV 与状态语义
+下表路径均省略 `/api/v1` 前缀：
 
-- 1–20 个有序输入，1–8 个白名单步骤。多个文件必须先 merge；merge 只能在第一步。后续去重/汇总可按需要排序，支持页面 JSON 自定义。
-- 合并严格检查列名和顺序；不自动对齐缺失列。CSV 使用标准库，支持 BOM、引号、逗号和字段内换行。默认 UTF-8/BOM，可显式选 GB18030，分隔符支持逗号、分号、Tab、竖线。
-- 去重用字段 tuple，保留第一条；空字符串属于同一个值。不隐式 trim 字段内容。
-- 分组顺序为首次出现顺序。求和用 Decimal，单数值最多 38 位有效数字、十进制指数范围 -18 至 18，拒绝空值、NaN、Infinity 和其他非法金额。错误带当前汇总阶段的逻辑行号和列名。输出固定 UTF-8 BOM + 逗号。
-- 无表头文件、重复/空列名、字段数不符会失败。只有表头允许输出空结果。
-- 处理过程显示阶段和本阶段已处理行数；不同阶段和新的 attempt 可以从零开始。总行数未知时 progress 为 null，只在成功后为 100，不显示估算百分比。
-- `QUEUED` 等待领取；`RUNNING` 已领取；`RETRY_WAIT` 退避中；`SUCCEEDED`、`FAILED`、`CANCELLED` 为终态。
-- 排队/等待重试任务可立即取消；运行中设置 `cancel_requested`，Worker 在检查点确认退出。成功和取消按数据库行上最先提交的状态转换决定。成功后取消仍返回成功。
-- `max_attempts` 包括首次执行，默认 3，最多 5。格式和参数错误不自动重试；临时存储/连接故障以及租约过期可重试。手动重试创建新任务。
+| 方法 | 路径 | 用途 |
+| --- | --- | --- |
+| `POST` / `GET` | `/files` / `/files/{id}` | 上传文件 / 查询文件元信息 |
+| `POST` / `GET` | `/jobs` | 创建任务 / 按状态分页查询任务 |
+| `GET` | `/jobs/{id}` | 状态、阶段、处理行数、错误和执行尝试 |
+| `POST` | `/jobs/{id}/cancel` | 取消任务或提交取消请求 |
+| `POST` | `/jobs/{id}/retry` | 为失败任务创建关联的新任务 |
+| `GET` | `/jobs/{id}/events` | 按游标查询执行事件 |
+| `GET` | `/jobs/{id}/result` | 下载成功结果 |
+| `GET` | `/jobs/{id}/events/archive` | 下载已归档的完整事件日志 |
+| `GET` | `/health/live` / `/health/ready` | 进程存活 / 依赖就绪 |
+| `GET` | `/ops` / `/metrics` | 运行概况 / Prometheus 指标 |
 
-## 可靠性与模块
+错误响应包含 `code`、`message` 和 `request_id`，响应头包含 `X-Request-ID`，便于排查问题。
 
-API → Service → PostgreSQL；创建任务与 outbox 处于同一事务。dispatcher 发消息后标记 outbox；标记前崩溃可能重复派发。Worker 通过条件 UPDATE 原子领取，生成 attempt 并设置租约。心跳、失败和结果提交都要求当前 attempt 和有效租约；恢复进程二次检查过期租约并安排重试。已派发但长期未领取的任务会重新派发，以覆盖 Redis 已接收后丢消息的情况。
+## 处理规则与任务语义
 
-每次尝试写入 `jobs/{job_id}/{attempt_id}/result.tmp`，fsync 后重命名为结果文件，再在事务中绑定 `result_file_id`。文件已写但提交失败只会产生孤儿文件，不会提前宣告成功。业务状态来自数据库，不使用 Celery 结果后端。消息只有 job_id；允许重复执行请求，业务结果仅发布一次。
+**CSV 规则**：每个任务接收 1–20 个有序输入和 1–8 个处理步骤。多个文件必须先合并，且表头名称与顺序必须一致。支持 UTF-8、UTF-8 BOM、GB18030，以及逗号、分号、Tab 和竖线分隔符；输出统一为 UTF-8 BOM、逗号分隔的 CSV。
 
-```text
-app/api/          HTTP、权限范围与响应
-app/core/         配置、会话、统一错误、上传字节限制
-app/models/       业务表、组件心跳、归档索引与巡检记录
-app/schemas/      请求、CSV 参数与步骤白名单
-app/services/     幂等创建、领取、状态转换、attempt 防护
-app/processors/   不依赖 HTTP/数据库的 CSV 流式处理
-app/workers/      执行协调、独立心跳、Celery 与本机 Worker
-app/scheduler/    outbox 派发、租约恢复、定期归档与清理
-app/observability/ 进程心跳、持久化指标、内部 exporter
-app/storage/      上传、摘要、独立结果对象
-app/templates/    Jinja2 页面
-app/static/       原生 JavaScript 与响应式样式
-migrations/       显式 Alembic 建表/索引/约束迁移
-scripts/          启动、演示、故障实验、基准测试、清理
-```
+**去重与汇总**：去重按指定字段组合保留首次出现的记录，不自动去除字段前后空格。汇总使用 Decimal，分组按首次出现的顺序输出；空值、NaN、Infinity 和非法数值会导致任务失败。无表头、空列名、重复列名或字段数量不一致也会明确报错。
 
-孤儿清理默认只预览，跳过数据库引用对象和 RUNNING 任务目录：
+**状态与重试**：任务经历 `QUEUED`、`RUNNING`，最终进入 `SUCCEEDED`、`FAILED` 或 `CANCELLED`；临时故障可进入 `RETRY_WAIT`，退避后重新排队。`max_attempts` 包括首次执行，默认 3 次，最多 5 次。格式与参数错误不自动重试；手动重试仅适用于失败任务，并创建一个关联原任务的新任务。
+
+**进度与取消**：页面展示当前阶段及该阶段已处理行数，阶段切换或重试时行数可从零开始。总行数未知时不估算百分比。排队任务可立即取消，运行中的任务由 Worker 在检查点响应取消请求；成功与取消以数据库中先提交的有效状态转换为准。
+
+## 可靠性设计
+
+API 接收请求并记录任务，CSV 计算由独立 Worker 执行。业务状态以数据库为准，不依赖 Celery 结果后端。
+
+- **提交与派发**：任务与 outbox 记录在同一事务中创建；dispatcher 负责派发，允许消息重复投递。
+- **领取与恢复**：Worker 通过条件更新原子领取任务；每次执行拥有独立 attempt 和租约，心跳续租，过期后由恢复逻辑安排重试。
+- **结果发布**：先将结果完整写入独立文件，再提交数据库引用；只有当前有效 attempt 能发布结果，旧 Worker 无权覆盖新执行结果。
+- **归档与清理**：输入默认闲置 30 天后压缩，终态任务的事件默认 30 天后归档。归档输入可再次提交任务；维护进程默认每小时执行归档和孤儿清理，成功结果与有效归档持续保留。
+
+该设计允许故障后的重复计算，并通过状态和租约约束结果发布。事务边界与状态机详见 [架构说明](docs/architecture.md)，归档并发保护与告警语义详见 [运维说明](docs/operations.md)。
+
+## 配置与数据存储
+
+本机应用从 `DF_` 环境变量及 `.env` 读取配置，环境变量优先；修改后需重启进程。Compose 使用 `compose.yaml` 中声明的容器环境变量与插值配置：数据库、Redis 和存储地址已为容器网络设定，新增参数需在对应服务的 `environment` 中传入。
+
+| 常用配置 | 默认值 | 说明 |
+| --- | --- | --- |
+| `DF_DATABASE_URL` | `sqlite:///./data/dataflow.db` | 本机数据库连接 |
+| `DF_STORAGE_ROOT` | `./data/storage` | 上传、结果及归档存储位置 |
+| `DF_EXECUTION_MODE` | `local` | 本机轮询或 `celery` 模式 |
+| `DF_REDIS_URL` | `redis://localhost:6379/0` | Celery 消息代理 |
+| `DF_API_TOKEN` | 空 | 可选的共享账号访问令牌 |
+| `DF_MAX_UPLOAD_BYTES` | `104857600` | 单文件上限，100 MiB |
+| `DF_MAX_ROWS` | `1000000` | 单任务所有输入的累计数据行数上限 |
+| `DF_MAX_UNIQUE_KEYS` / `DF_MAX_GROUPS` | `200000` / `100000` | 去重键数 / 汇总分组数上限 |
+| `DF_LEASE_SECONDS` | `30` | 执行租约秒数 |
+| `DF_INPUT_ARCHIVE_DAYS` / `DF_EVENT_ARCHIVE_DAYS` | `30` / `30` | 输入闲置 / 终态事件归档天数 |
+| `DF_MAINTENANCE_INTERVAL_SECONDS` | `3600` | 自动维护间隔秒数 |
+
+配置示例见 [.env.example](.env.example)，全部参数及校验范围见 [Settings](app/core/config.py)。Compose 另支持 `DF_API_PORT`、`DF_WORKER_CONCURRENCY`、`DF_PROMETHEUS_PORT` 和 `DF_ALERTMANAGER_PORT`。
+
+本机数据库与运行文件位于 `data/`。Compose 使用 `job-data` 存储文件、`postgres-data` 存储数据库、`redis-data` 存储 Redis AOF；API 与 Worker 共享同一文件卷。虚拟环境、私密配置、运行数据和日志均已加入 `.gitignore`。
+
+需要手动清理孤儿文件时，先预览再执行：
 
 ```bash
 uv run python -m scripts.cleanup
 uv run python -m scripts.cleanup --apply
-# Compose 的存储/数据库：
+# 对 Compose 的数据库与存储执行清理
 docker compose exec api python -m scripts.cleanup --apply
 ```
 
-maintenance 进程启动时执行一次，此后默认每小时自动运行。最近成功时间、处理数量和错误显示在 `/ops` 与页面中；不需要另配 cron。
+## 开发与验证
 
-输入默认闲置 30 天后写入 `archives/inputs/...csv.gz`；排队、运行、等待重试任务引用的输入始终受保护。压缩成功后，条件更新归档元数据，提交成功才移除原始副本；创建新任务会锁定输入并更新 last_used_at，与归档提交互斥。归档输入可直接创建任务和重试，Worker 自动解压并校验原始大小与 SHA-256，执行后删除临时解压文件。
-
-终态任务默认 30 天后将日志写为 `archives/events/...jsonl.gz`，先 fsync 文件，再在同一数据库事务中登记归档并删除对应的在线事件。详情页提供归档下载。归档对象本身不会因孤儿清理被删除；结果文件也不自动过期。已有归档时，Alembic 会拒绝丢失归档元数据的降级。
-
-## 测试与故障演示
+在已完成 `uv sync --frozen` 的环境中运行：
 
 ```bash
 uv run ruff check .
 uv run ruff format --check .
 uv run pytest -q --cov=app --cov-report=term-missing
+uv run alembic upgrade head
 uv run alembic check
-# 使用有 CREATE SCHEMA 权限的 PostgreSQL 连接测试，临时 schema 自动清理：
+```
+
+使用 PostgreSQL 运行同一套测试时，连接账号需具备 `CREATE SCHEMA` 权限；每例测试使用独立临时 schema，并在结束后清理：
+
+```bash
 DF_TEST_DATABASE_URL='postgresql+psycopg://user:password@localhost/testdb' uv run pytest -q
 ```
 
-浏览器验收依赖独立分组：
+浏览器测试需要先启动应用，并安装独立依赖分组和 Chromium：
 
 ```bash
 uv sync --frozen --group browser
@@ -225,66 +223,45 @@ uv run --group browser playwright install --with-deps chromium
 uv run --group browser python scripts/browser_smoke.py
 ```
 
-真实故障实验会暂时停止**本项目 Compose** 的 Redis，并 SIGKILL Worker 容器，最后恢复它们。需先启动 Compose：
+已有验收记录：SQLite 与 PostgreSQL 各 **57 项测试通过**；真实 Celery 负载实验完成 **1670 个任务，0 失败**；Redis 停机、Worker 强制退出、PostgreSQL 提交中断及告警触发与恢复均经过实际验证。完整环境、数据和测试边界见 [验收报告](docs/verification.md)。其中持续负载阶段为 5 分钟，不代表数天级耐久测试或生产容量保证。
 
-```bash
-uv run python scripts/generate_data.py --mb 10
-uv run python scripts/fault_demo.py
+### 目录结构
+
+```text
+app/
+  api/             HTTP 接口
+  core/            配置、数据库连接与统一错误
+  models/          数据模型
+  schemas/         请求校验与处理步骤定义
+  processors/      CSV 处理逻辑
+  services/        任务状态、幂等与归档服务
+  workers/         本机和 Celery 执行入口
+  scheduler/       派发、恢复与定期维护
+  observability/   心跳、指标与 exporter
+  storage/         文件存储与归档读写
+  templates/       页面模板
+  static/          JavaScript 与样式
+migrations/        Alembic 数据库迁移
+monitoring/        Prometheus 与 Alertmanager 配置
+scripts/           启动、演示、基准与故障验证工具
+tests/             单元、集成、可靠性与运维测试
+samples/           示例输入与预期结果
+docs/              架构、运维说明及验收记录
 ```
 
-它验证停 Redis 时仍能创建 QUEUED 任务、恢复后 outbox 派发，以及运行中杀 Worker 后租约恢复、attempt 增加、结果和正常执行一致。更多确定性故障测试见 `tests/faults/` 和 `tests/operations/`，涵盖旧 Worker 返回、并发重复消息、取消竞争、写文件后数据库提交失败、孤儿清理和重试上限。
+## 适用范围与限制
 
-性能脚本使用隔离的临时 SQLite 与 1/2/4 个真实本机 Worker 进程，记录吞吐、排队/执行时间、采样内存和错误率：
+- 当前采用单演示账号与可选共享令牌，尚无注册、角色管理或多租户配额；处理器仅支持已定义的 CSV 步骤，不执行用户代码，不支持 Excel 或通用 DAG。
+- SQLite 适合本机体验；更高写入并发使用 PostgreSQL。当前文件存储依赖单主机共享卷，跨主机部署需接入所有 Worker 可访问的存储。
+- 去重和分组需要维护内存状态，并受唯一键数与分组数上限限制，尚未实现磁盘溢写；文件大小和总行数限制同时生效。
+- 归档用于压缩和减少在线事件数据，成功结果与有效归档不会自动销毁；长期运行需规划存储容量与备份。
+- 页面采用轮询，当前仅展示前 100 条在线事件；API 支持游标查询，已归档事件可完整下载。进程心跳与就绪检查不覆盖所有内部故障。
+- 指标从业务表聚合，大量历史数据下需评估查询成本；实际并发与吞吐应在目标环境中测量。
 
-```bash
-uv run python scripts/generate_data.py --mb 10
-uv run python -m scripts.benchmark data/benchmark.csv --jobs 4
-uv run python scripts/generate_data.py --mb 100 --output data/benchmark-100mb.csv
-uv run python -m scripts.benchmark data/benchmark-100mb.csv --jobs 4
-```
+## 相关文档
 
-脚本为 100 MiB 用例单独提升行数/文件上限，不改变正常服务配置。测量内存是每 50ms 采样的所有 Worker RSS 总和，共享页可能重复计数；测试包含 Worker 启动，未隔离 CPU。结果只能作为当前环境演示，不能当成跨机器保证。[实测报告](docs/verification.md)和两份原始 JSON 已随项目保存。
-
-## 持续压测和真实数据库中断
-
-使用独立项目 `dataflow-verification`、独立数据卷和 18000 端口，不操作正常演示数据。先构建新镜像并准备数据：
-
-```bash
-docker compose build api
-uv run python scripts/generate_data.py --mb 10
-uv run python scripts/generate_data.py --mb 100 --output data/benchmark-100mb.csv
-uv run python -m scripts.celery_benchmark --duration 60 --soak-seconds 300
-```
-
-该脚本依次运行 10/100 MiB、1/2/4 个 Celery Worker 容器，每容器一个子进程，每组持续提交 60 秒，再进行 300 秒持续负载。每个 Worker 最多保持两个未完成任务；所有成功结果都与同输入的基线 SHA-256 比较。记录队列/执行 P95、吞吐、错误率和容器内存采样。可提高 `--duration`、`--soak-seconds` 做更长测试。100 MiB 测试只在隔离项目放宽行数/字节数上限。
-
-完成压测并等待队列为空后：
-
-```bash
-uv run python -m scripts.postgres_fault_demo
-uv run python -m scripts.monitoring_demo
-```
-
-数据库实验在专用测试进程的结果落盘后暂停提交，实际停止 PostgreSQL，再放行真实提交调用；没有模拟 SQL 异常，也没有添加生产调试接口。验证数据库离线时 live=200、ready=503、业务查询=500，恢复连接后任务仍未成功且结果下载=409，最后通过租约恢复重新执行并对照结果。
-
-监控实验会暂时停止隔离项目的 Worker，验证心跳失效、Prometheus 规则进入 firing、Alertmanager 收到告警，以及启动 Worker 后告警恢复。日志和 JSON 证据保存在 `docs/`（运行日志在忽略的 `data/`）。实验结束可清理独立服务：
-
-```bash
-DF_API_PORT=18000 DF_PROMETHEUS_PORT=19090 DF_ALERTMANAGER_PORT=19093 \
-  docker compose -p dataflow-verification --profile monitoring down
-```
-
-详见 [运维说明](docs/operations.md) 和 [验收报告](docs/verification.md)。
-
-## 已知限制
-
-- 单演示账号，不包含注册、角色管理、Excel、DAG 或执行用户代码；并非公网多租户服务。
-- 本地共享 volume 仅适用于同一主机；跨主机必须换成各 Worker 均可访问的存储。
-- 去重和分组占用 O(U)/O(G) 内存，有显式上限；未实现外部排序或磁盘状态溢出。总行数限制也会影响低于文件大小上限的数据。
-- SQLite 用于本机演示，写并发受串行化限制。生产规模并发使用 PostgreSQL 并按实测资源限制 Worker 数量。
-- 输入和事件按配置自动压缩归档，但归档和成功结果不自动销毁，尚无账号存储配额。孤儿清理宽限期应大于正常上传事务耗时。
-- 页面每 3 秒轮询；事件 API 支持游标，页面展示前 100 条在线事件，归档可完整下载。ready 检查依赖就绪，独立心跳反映进程存活；二者均不能保证某个 Worker 的全部内部组件都正常。
-- 指标从业务表聚合，避免多进程重复统计；大规模长期历史下应进一步引入聚合表。短期持续测试不能替代数天稳定性和容量规划。
-- 正常停止等待当前工作完成；超出停止宽限期的强制退出通过租约恢复。无“恰好执行一次”承诺。
-
-官方语义参考：[FastAPI 文件上传](https://fastapi.tiangolo.com/tutorial/request-files/)、[Celery 任务与消息确认](https://docs.celeryq.dev/en/stable/userguide/tasks.html)、[SQLAlchemy 条件更新](https://docs.sqlalchemy.org/en/20/orm/queryguide/dml.html)、[Python csv](https://docs.python.org/3/library/csv.html)。实际依赖版本以 `uv.lock` 为准。
+| 文档 | 内容 |
+| --- | --- |
+| [架构说明](docs/architecture.md) | 任务状态机、事务边界、幂等与结果一致性 |
+| [运维说明](docs/operations.md) | 指标定义、告警规则、归档一致性与故障操作 |
+| [验收报告](docs/verification.md) | 功能验证、测试环境、基准数据与真实故障记录 |
