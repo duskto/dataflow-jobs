@@ -1,40 +1,54 @@
-# 验收记录
+# 验收与复现记录
 
-日期：2026-10-22。以下为本工作区实际运行结果，不是预估或未来目标。
+本报告记录 **2026-10-22** 的实际验证结果，并提供复现方法。后续文档整理不代表重新执行了这些实验；再次运行时应保存新的环境信息与结果文件。
 
-## 功能与可靠性
+项目启动见 [README](../README.md)，设计原理见 [架构说明](architecture.md)，服务检查与故障定位见 [运维说明](operations.md)。
 
-| 验证 | 结果 | 范围 |
-|---|---|---|
-| Ruff lint + format | 通过 | 全部 Python 源码、迁移和测试 |
-| pytest / SQLite | 57 passed | 单元、API 集成、并发与故障测试 |
-| pytest / PostgreSQL 17 | 57 passed | 相同用例；每例独立临时 schema |
-| 覆盖率 | 86% | 扩展后的 app 语句覆盖；独立进程/容器实验不纳入覆盖率 |
-| Alembic | 通过 | upgrade、downgrade/upgrade、模型差异检查 |
-| 本机 uv 双 Worker + HTTP | 通过 | 上传 → 幂等创建 → 后台处理 → 下载对照 |
-| Compose / PostgreSQL / Redis / Celery | 通过 | 构建、一次性迁移、服务健康、完整 HTTP 流程 |
-| Redis 真实停机 | 通过 | 队列离线时创建任务仍返回 202；恢复后完成 |
-| Celery Worker 真实 SIGKILL | 通过 | 第 1 次执行被杀，租约恢复后第 2 次成功；与基线文件字节一致 |
-| Chromium 桌面/移动端 | 通过 | 上传、提交、轮询、下载内容一致；运行概况；无 JS 异常；390px 无溢出 |
-| 定时归档与清理 | 通过 | 进程启动即执行；归档复用、并发保护、失败保留原件、状态记录 |
-| 已有数据库升级 | 通过 | SQLite/PostgreSQL 迁移保留上传，回填 last_used_at，无新模型差异 |
-| 真实 PostgreSQL 中断 | 通过 | 落盘后提交失败不虚假成功；租约恢复后第二次执行成功 |
-| Prometheus 格式/规则 | 通过 | promtool check metrics、check rules、test rules |
-| 告警实际触发/恢复 | 通过 | 停 Worker → Prometheus firing → Alertmanager 接收 → 启动 Worker 自动解除 |
+## 结果概览
 
-pytest 有一条来自 Starlette 的兼容性弃用提示：当前 TestClient 的 httpx 适配将来迁移到 httpx2。这不影响当前锁定版本的测试结果。
+| 验证项 | 已记录结果 | 验证范围 |
+| --- | --- | --- |
+| Ruff lint 与格式检查 | 通过 | Python 源码、迁移与测试 |
+| SQLite 测试 | 57 passed | 单元、API、并发、故障与运维用例 |
+| PostgreSQL 17 测试 | 57 passed | 相同测试集；每例使用独立临时 schema |
+| 语句覆盖率 | 86% | `app` 代码；独立进程和容器实验未纳入覆盖率 |
+| Alembic | 通过 | 升级、降级后再升级、已有数据保留、模型差异检查 |
+| 本机 uv / Compose HTTP 流程 | 通过 | 上传、幂等创建、后台处理与下载比对 |
+| 浏览器流程 | 通过 | 桌面与 390px 移动端、运行概况、下载结果；无 JS 异常和横向溢出 |
+| 自动归档与清理 | 通过 | 归档复用、并发保护、失败保留原件、维护状态记录 |
+| Redis 停机 | 通过 | 离线期间创建 QUEUED 任务，恢复后完成 |
+| Celery Worker SIGKILL | 通过 | 租约恢复后再次执行成功，结果与基线一致 |
+| PostgreSQL 提交中断 | 通过 | 文件落盘后提交失败不虚假成功；第 2 次执行完成 |
+| Prometheus 指标与规则 | 通过 | 指标格式、规则语法及规则用例 |
+| 告警触发与恢复 | 通过 | 停 Worker、Prometheus firing、Alertmanager 接收、恢复后解除 |
+| 真实 Celery 负载 | 1670 个任务，0 失败 | 10/100 MiB、1/2/4 Worker，以及 300 秒持续负载 |
 
-确定性故障测试覆盖：重复消息并发领取只产生一个 attempt、旧 Worker 无法心跳/失败提交/成功提交、过期租约在恢复进程介入前也不能提交、次数耗尽终态、取消先于结果提交、取消死 Worker 后恢复、Redis 派发失败与已派发消息丢失、临时存储重试、写文件后数据库提交异常、孤儿对象保护、独立心跳覆盖超过租期的阻塞处理，以及退避未到期拒绝领取。
+本轮 pytest 出现一条 Starlette TestClient 的 httpx 适配弃用提示，未影响锁定依赖下的结果。测试数量与覆盖率以本次记录为准，后续代码变更应重新测量。
 
-单元故障测试仍在“结果文件完成后、事务提交前”注入 SQLAlchemy OperationalError，保证确定性。新增真实实验通过独立 Compose 项目，在同一窗口实际停止 PostgreSQL；没有模拟 SQL 异常。离线时 live=200、ready=503、业务查询=500；恢复连接但尚未运行恢复进程时，任务仍为 RUNNING，result_file_id 为 NULL，下载返回 409；随后自动恢复为第 2 次执行成功，结果与正常基线字节一致。证据见 [postgres-fault.json](postgres-fault.json)。这验证的是服务停止/连接中断，并不等于穷尽所有网络分区模式。
+### 自动化测试覆盖的关键场景
 
-归档测试额外覆盖压缩后输入透明复用、损坏归档拒绝处理、新任务使归档候选失效、非终态输入保护、并发事件归档只有一个胜者、归档下载所属账号限制、归档元数据提交失败仍保留原文件，以及拒绝丢失归档引用的降级。
+| 测试目录 | 重点 |
+| --- | --- |
+| [tests/unit](../tests/unit) | CSV 编码与结构、合并、去重、Decimal 汇总、资源边界 |
+| [tests/integration](../tests/integration) | 上传、任务 API、幂等、所属账号、错误响应与下载 |
+| [tests/faults](../tests/faults) | 重复领取、旧 Worker 提交、租约过期、取消竞争、重试上限、派发失败、孤儿清理 |
+| [tests/operations](../tests/operations) | 归档复用与损坏检测、并发归档、已有数据升级、指标与心跳、维护状态 |
 
-## 性能实验
+确定性故障测试包含在结果文件完成后、事务提交前注入 SQLAlchemy 异常，便于稳定复现。真实 PostgreSQL 实验则实际停止数据库服务，在同一提交窗口验证恢复；两者的证据范围不同。
 
-环境：WSL2 / Debian 13，Linux 6.18.26.1，Intel Core i5-13500H，16 个可见逻辑 CPU，约 7.62 GiB 可见内存，Python 3.13.5，uv 0.12.11。使用相同机器、相同数据生成器与本地磁盘，无 CPU 隔离，也未排除其他后台负载。每个场景仅 4 个任务、一次运行，不构成严谨的容量承诺。
+## 实验环境与测量口径
 
-数据：order_id 循环 100000 个唯一值，10 个 region，金额 123.45。各任务执行合并 → 去重 → 汇总。10 MiB 输入 388361 行；100 MiB 输入 3883614 行。生成器写完整记录，最终字节数可略高于目标。100 MiB 基准在隔离配置中提高了文件/行数上限。
+本机环境为 WSL2 / Debian 13、Linux 6.18.26.1、Intel Core i5-13500H，16 个可见逻辑 CPU、约 7.62 GiB 可见内存，Python 3.13.5、uv 0.12.11。Compose 使用 PostgreSQL 17、Redis 7；应用依赖以 [uv.lock](../uv.lock) 为准。
+
+输入由 [generate_data.py](../scripts/generate_data.py) 生成：`order_id` 循环 100000 个唯一值，10 个 region，amount 固定为 123.45。每个任务执行合并、去重、分组求和。10 MiB 输入有 388361 行，100 MiB 输入有 3883614 行；生成器保留完整记录，实际字节数可能略高于目标。
+
+测试使用同一主机和本地磁盘，未隔离 CPU，也未排除其他后台负载。100 MiB 输入超过默认行数上限，生成后的字节数也可能超过默认上传上限；基准脚本仅在隔离测试配置中放宽限制，不能据此认为默认服务可直接接收同样的测试文件。
+
+## 性能结果
+
+### 本机 SQLite 与轮询 Worker
+
+每个场景只提交 4 个任务，运行一次；每组创建临时 SQLite 和独立存储目录，不通过 HTTP 测量上传。耗时从 Worker 启动计起，包含进程启动；排队时间从任务创建到 attempt 开始。
 
 | 输入 | Worker 进程 | 总耗时(s) | 吞吐(任务/s) | 平均排队(s) | 平均执行(s) | 采样峰值 RSS 总和(MiB) | 错误率 |
 |---|---:|---:|---:|---:|---:|---:|---:|
@@ -45,19 +59,13 @@ pytest 有一条来自 Starlette 的兼容性弃用提示：当前 TestClient �
 | 100 MiB | 2 | 8.222 | 0.4865 | 2.172 | 3.929 | 148.2 | 0% |
 | 100 MiB | 4 | 5.099 | 0.7844 | 0.265 | 4.761 | 284.9 | 0% |
 
-这些数据表明当前样本中多进程提高总吞吐，但单任务执行时间没有缩短。状态集合取决于唯一键数，而非全部输入行数，因此 100 MiB 场景内存没有按文件大小同比增长；高基数数据会有不同表现。
+原始数据：[10 MiB](benchmark-local-10mb.json)、[100 MiB](benchmark-local-100mb.json)。内存通过 Linux `/proc` 约每 50ms 采样各 Worker RSS 后求和，共享页可能重复计数，未包含 API、数据库等服务，也不是进程的严格内存高水位。
 
-原始测量：[10 MiB JSON](benchmark-local-10mb.json)、[100 MiB JSON](benchmark-local-100mb.json)。内存是每 50ms 采样各 Worker 的 RSS 相加，共享页可重复计数，不包含 API、dispatcher、数据库或 Redis，不是严格的进程高水位。任务排队时间从创建计起，总耗时从启动 Worker 计起。
+此样本中增加 Worker 提高了总吞吐，但没有缩短单任务执行时间。内存状态主要取决于唯一键和分组数量，不能将这些低基数样本推广到任意 CSV 数据。
 
-## 浏览器记录
+### PostgreSQL、Redis 与 Celery
 
-运行 `uv run --group browser python scripts/browser_smoke.py` 会核对默认三步流水线的下载内容，检查无 JavaScript 异常、390px 移动端无横向溢出，并输出 `docs/screenshots/desktop.png` 与 `mobile.png`。浏览器测试需要 Chromium 和系统共享库；相关依赖独立于应用运行环境。
-
-当前验收环境无系统浏览器共享库和中文字体，已在忽略的 `data/browser-deps/`、`data/browser-fonts/` 中准备本地依赖，通过 LD_LIBRARY_PATH / FONTCONFIG_FILE 完成浏览器验收，没有修改系统软件包。应用页面使用系统字体，不依赖外部字体网络服务。
-
-## PostgreSQL / Redis / Celery 持续负载
-
-在独立的 `dataflow-verification` 项目中，经真实 HTTP 上传和提交，使用 PostgreSQL、Redis、Celery；每个 Worker 容器固定 1 个计算子进程。每种输入和并发配置持续提交 60 秒，随后排空任务；额外执行 300 秒持续负载。每个 Worker 最多保持两个未完成任务，属于有界闭环负载。总计 **1670 个任务，0 失败，所有结果摘要与同输入基线一致**。
+在独立 Compose 项目 `dataflow-verification` 中，经真实 HTTP 上传、提交、查询和下载。每个 Worker 容器固定一个计算子进程，每个 Worker 最多维持两个未完成任务，属于有界闭环负载。每个矩阵场景持续提交 60 秒，停止提交后排空；最后用 10 MiB 输入和 4 个 Worker 持续提交 300 秒。
 
 | 输入 | Worker | 持续提交(s) | 完成任务 | 吞吐(任务/s) | 排队 P95(s) | 执行 P95(s) | 采样 Worker 容器内存总和(MiB) |
 |---|---:|---:|---:|---:|---:|---:|---:|
@@ -69,10 +77,131 @@ pytest 有一条来自 Starlette 的兼容性弃用提示：当前 TestClient �
 | 100 MiB | 4 | 60 | 36 | 0.4788 | 9.583 | 8.589 | 502.1 |
 | 10 MiB 持续负载 | 4 | 300 | 1163 | 3.8560 | 0.943 | 1.099 | 583.5 |
 
-原始记录：[benchmark-celery.json](benchmark-celery.json)。内存由 docker stats 循环采样，每次命令完成后间隔 1 秒，实际频率还取决于命令耗时；这是 Worker 容器的 cgroup 内存指标，不是前面本机测试的 RSS。未计入 API、PostgreSQL、Redis 和其他服务。测试未隔离 CPU，也有其他开发与验证负载，因此两套测试不能用于直接比较框架性能。
+共完成 **1670 个任务，0 失败**，所有下载结果的 SHA-256 均与同输入基线一致。吞吐分母包含停止提交后的排空时间，而不只是表中的持续提交秒数。原始数据见 [benchmark-celery.json](benchmark-celery.json)。
 
-5 分钟持续负载验证了本轮场景的稳定性；它不是数天级耐久测试，也不是生产容量保证。可通过脚本参数延长时间、改变数据分布和并发继续测量。
+内存由 `docker stats` 循环采样，每次命令完成后等待 1 秒，实际间隔还包含命令耗时；数值为 Worker 容器内存之和，不含 API、PostgreSQL、Redis 等服务。该口径与本机 RSS 不同，不能据此直接比较两种框架的内存或吞吐优劣。
 
-## 告警链路实测
+## 真实故障与告警证据
 
-独立验证栈中停止 Worker，进程心跳下线后应用显示 NO_WORKERS。条件持续 30 秒后，Prometheus 进入 firing，Alertmanager 实际收到告警。恢复 Worker 后，采样值归零、规则告警消失。没有发送任何外部通知。原始证据：[monitoring-verification.json](monitoring-verification.json)。
+### Redis 与 Worker
+
+Redis 停止期间，API 仍可将任务及 outbox 提交到可用数据库，任务保持 QUEUED；Redis 恢复后任务成功。另一次实验在任务 RUNNING 时强杀 Worker，随后通过租约恢复产生新的执行尝试，结果与正常基线一致。
+
+该实验使用 [fault_demo.py](../scripts/fault_demo.py)，证据为当次命令输出；仓库未单独保存其结构化 JSON 报告。测试依赖捕获任务运行窗口，输入过小、任务提前完成时脚本会明确失败。
+
+### PostgreSQL 在结果落盘后中断
+
+专用测试进程在结果文件写入并同步后暂停最终提交，实际停止 PostgreSQL，再放行提交调用。没有模拟 SQL 异常；暂停逻辑仅用于测试进程，应用未增加生产调试接口。
+
+| 检查时点 | 记录结果 |
+| --- | --- |
+| 数据库停止时 | live 返回 200，ready 返回 503，任务查询返回 500 |
+| 数据库恢复、恢复进程尚未启动时 | 任务仍为 RUNNING、无结果引用，下载返回 409 |
+| Worker 与 dispatcher 恢复后 | 任务 SUCCEEDED，共 2 次执行，结果与正常基线一致 |
+
+原始证据：[postgres-fault.json](postgres-fault.json)。此实验验证服务停止与连接中断，不覆盖所有网络分区、连接黑洞或磁盘损坏模式。
+
+### 告警触发与解除
+
+在空队列的独立项目中正常停止 Worker，应用显示 `NO_WORKERS`；条件持续后，Prometheus 进入 firing，Alertmanager 实际收到记录。重新启动 Worker 后，应用告警指标归零，Prometheus 规则告警消失。未发送外部通知。
+
+[原始记录](monitoring-verification.json) 中，Worker 离线检测为 0.03 秒，等待 firing 为 32.04 秒，随后检查 Alertmanager 时记录已存在，等待为 0 秒；恢复后指标归零检查耗时为 2.01 秒。这些都是顺序检查各阶段的等待时间，不是端到端延迟承诺。正常退出会主动标记停止，因此 0.03 秒不能当作强杀后的心跳超时。
+
+## 复现步骤
+
+所有命令在仓库根目录运行，先执行 `uv sync --frozen`。以下将新输出放到忽略的 `data/`，避免覆盖本次已提交的 JSON 和浏览器记录。脚本若使用默认输出路径，部分会覆盖 `docs/` 中的原始记录。
+
+### 1. 代码检查与数据库测试
+
+```bash
+uv run ruff check .
+uv run ruff format --check .
+uv run pytest -q --cov=app --cov-report=term-missing
+```
+
+使用 PostgreSQL 时提供独立测试数据库连接，账号需要 `CREATE SCHEMA` 权限。测试夹具按用例创建临时 schema，正常结束后删除，并将文件写入临时目录：
+
+```bash
+DF_TEST_DATABASE_URL='postgresql+psycopg://user:password@localhost/testdb' uv run pytest -q
+```
+
+迁移检查会操作当前应用配置指向的数据库，应与隔离测试区分：
+
+```bash
+uv run alembic upgrade head
+uv run alembic current
+uv run alembic check
+```
+
+### 2. HTTP 与浏览器流程
+
+先按 README 启动本机服务或 Compose，再运行：
+
+```bash
+uv run python scripts/demo.py
+uv sync --frozen --group browser
+uv run --group browser playwright install --with-deps chromium
+uv run --group browser python scripts/browser_smoke.py --output data/browser-smoke
+```
+
+`--with-deps` 会安装 Chromium 所需系统依赖，可能需要系统包管理权限。浏览器脚本还要求测试实例未启用令牌且当前无运维告警；它没有自动输入令牌的逻辑，并会断言页面显示“服务运行正常”。HTTP 演示脚本则支持从当前终端的 `DF_API_TOKEN` 环境变量读取令牌。
+
+浏览器测试对照下载内容、检查 JavaScript 异常及移动端横向溢出，并生成桌面和手机截图。原验收环境在忽略的 `data/browser-deps/` 与 `data/browser-fonts/` 中补充了系统库和中文字体，通过 `LD_LIBRARY_PATH` / `FONTCONFIG_FILE` 使用；这些本机辅助文件不随仓库分发。
+
+### 3. 本机基准
+
+该脚本通过 Linux `/proc` 读取 RSS，内存测量应在 Linux 或 WSL 中运行。数据库和存储使用临时目录，结束时清理：
+
+```bash
+uv run python scripts/generate_data.py --mb 10
+uv run python scripts/generate_data.py --mb 100 --output data/benchmark-100mb.csv
+uv run python -m scripts.benchmark data/benchmark.csv --jobs 4 \
+  --output data/benchmark-local-10mb.json
+uv run python -m scripts.benchmark data/benchmark-100mb.csv --jobs 4 \
+  --output data/benchmark-local-100mb.json
+```
+
+### 4. 独立 Celery 负载、数据库与告警实验
+
+需要 Docker Engine、Compose v2，以及可用的 18000、19090、19093 端口。先构建应用镜像并准备两份输入，随后按顺序运行：
+
+```bash
+docker compose build api
+uv run python scripts/generate_data.py --mb 10
+uv run python scripts/generate_data.py --mb 100 --output data/benchmark-100mb.csv
+uv run python -m scripts.celery_benchmark --duration 60 --soak-seconds 300 \
+  --output data/benchmark-celery.json
+uv run python -m scripts.postgres_fault_demo --output data/postgres-fault.json
+uv run python -m scripts.monitoring_demo --output data/monitoring-verification.json
+```
+
+负载脚本创建独立的 `dataflow-verification` 项目，使用独立数据卷、每容器一个计算进程，并在测试环境中将上传上限设为 128 MiB、总行数设为 1000 万。脚本会关闭验证实例的 API 令牌，端口仍绑定本机；不会修改正常项目的环境配置。
+
+负载结束后，独立服务保留运行。数据库和监控脚本要求该 API 已就绪且无未完成任务；监控实验还要求存在已记录的执行尝试，因此上述顺序可直接满足前提。数据库实验暂时停止独立项目的 PostgreSQL、Worker 与 dispatcher；监控实验停止其 Worker，并开启独立监控服务。
+
+这些脚本共享本机 Docker 资源，独立数据卷不等于资源隔离。使用 `--project` 或 `--port` 自定义前，应确认所有关联脚本和清理命令采用一致值；监控脚本固定使用 19090 和 19093。
+
+实验结束后停止独立服务并保留数据卷：
+
+```bash
+DF_API_PORT=18000 DF_PROMETHEUS_PORT=19090 DF_ALERTMANAGER_PORT=19093 \
+  docker compose -p dataflow-verification --profile monitoring down
+```
+
+### 5. 当前 Compose 项目的 Redis 与 Worker 故障
+
+此脚本直接调用当前项目的 `docker compose stop redis` 和 `kill -s SIGKILL worker`，不自动选择独立验证栈。只在可中断的演示实例中执行；默认目标 API 为 8000，`--url` 必须与 Compose 项目对应。
+
+```bash
+docker compose up --build -d
+uv run python scripts/generate_data.py --mb 10
+uv run python scripts/fault_demo.py
+```
+
+脚本在 `finally` 中尝试恢复停止的服务；若终端或脚本被强制终止，应通过 `docker compose ps` 和 ready 检查确认恢复。Prometheus 规则的独立校验命令见 [运维说明](operations.md#prometheus-与告警)。
+
+## 结论的适用范围
+
+本次记录表明：已测试输入下的处理结果一致，所覆盖的并发与故障窗口能够按设计恢复，监控和归档流程可用。它不构成任意部署条件下的性能或可用性保证。
+
+尚未覆盖数天级持续运行、跨主机共享存储、完整网络分区矩阵、多租户隔离及大规模历史数据下的查询成本。5 分钟持续负载和固定低基数样本不能替代目标环境的容量规划；复测时应记录机器、并发、数据分布、配置变化和采样方式，再比较结果。
