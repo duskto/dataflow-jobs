@@ -1,0 +1,49 @@
+# Local development guide (not part of the published project)
+/任务调度与数据处理平台_开发指南.md
+
+# Python environments and generated build files
+.venv/
+venv/
+build/
+dist/
+*.egg-info/
+__pycache__/
+*.py[cod]
+
+# Test, lint and coverage output
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.hypothesis/
+.tox/
+.nox/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+test-results/
+playwright-report/
+
+# Private configuration and runtime data (keep the documented example)
+.env
+.env.*
+!.env.example
+data/
+*.log
+*.pid
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.sqlite-*
+*.sqlite3-*
+
+# Editor, operating system and temporary files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+*.tmp

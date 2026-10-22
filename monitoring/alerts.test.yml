@@ -1,0 +1,39 @@
+rule_files:
+  - alerts.yml
+evaluation_interval: 5s
+tests:
+  - interval: 5s
+    input_series:
+      - series: 'up{job="dataflow", instance="exporter:9108"}'
+        values: '0+0x12'
+      - series: 'dataflow_alert_active{code="NO_WORKERS"}'
+        values: '1+0x12'
+    alert_rule_test:
+      - eval_time: 20s
+        alertname: DataFlowExporterUnavailable
+        exp_alerts: []
+      - eval_time: 40s
+        alertname: DataFlowExporterUnavailable
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: dataflow
+              instance: exporter:9108
+            exp_annotations:
+              summary: "指标采集失败：检查数据库连接和 exporter"
+      - eval_time: 40s
+        alertname: DataFlowOperationalAlert
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              code: NO_WORKERS
+            exp_annotations:
+              summary: "DataFlow 运维异常：NO_WORKERS"
+  - interval: 5s
+    input_series:
+      - series: 'dataflow_alert_active{code="NO_WORKERS"}'
+        values: '1+0x8 0+0x8'
+    alert_rule_test:
+      - eval_time: 60s
+        alertname: DataFlowOperationalAlert
+        exp_alerts: []

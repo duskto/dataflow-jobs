@@ -1,0 +1,10 @@
+{
+  "scrape_up": true,
+  "recorded_attempts": 1673,
+  "worker_offline_detection_seconds": 0.03,
+  "prometheus_firing_wait_seconds": 32.04,
+  "alertmanager_delivery_wait_seconds": 0.0,
+  "recovery_seconds": 2.01,
+  "alert_resolved": true,
+  "external_notifications_sent": false
+}

@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>DataFlow Jobs · 数据处理工作台</title><link rel="stylesheet" href="/static/style.css"></head>
+<body>
+<header><a href="/" class="brand"><span class="mark">D</span>DataFlow <b>Jobs</b></a><nav><span class="dot"></span>数据处理工作台 <a href="/docs" target="_blank" rel="noreferrer">API 文档 ↗</a></nav></header>
+<main>
+<section class="intro"><div class="eyebrow">YOUR DATA, IN FLOW</div><h1>让数据有条不紊。</h1><p>上传 CSV，编排处理步骤。耗时计算交给后台，结果随时可取。</p></section>
+<div id="notice" role="status" aria-live="polite" hidden></div>
+<section class="card operations" aria-label="运行概况">
+<div class="section-title"><h2>运行概况</h2><span id="ops-mode">LIVE STATUS</span></div>
+<div id="ops-stats" class="ops-stats"><p class="empty">正在读取运行状态…</p></div>
+<div id="ops-alerts" role="status" aria-live="polite"></div>
+<details><summary>保留与归档</summary><p id="ops-retention">正在读取归档状态…</p></details>
+</section>
+<div class="workspace">
+<section class="card compose"><div class="section-title"><h2>创建处理任务</h2><span>01 — 03</span></div>
+<form id="job-form">
+<label class="label" for="files">01 &nbsp; 添加数据</label>
+<label class="dropzone" for="files"><span class="upload-icon">↑</span><strong>选择 CSV 文件</strong><span>可多选 · 按列表顺序合并 · 默认单文件最大 100 MB</span><input id="files" type="file" accept=".csv" multiple required></label>
+<ul id="file-list" class="file-list"></ul>
+<label class="label" for="pipeline">02 &nbsp; 编排处理步骤</label>
+<select id="pipeline"><option value="all">合并 → 去重 → 分组汇总</option><option value="merge-dedup">合并 → 去重</option><option value="merge-agg">合并 → 分组汇总</option><option value="merge">仅合并</option><option value="custom">自定义步骤顺序（JSON）</option></select>
+<div id="columns"><label>去重字段<input id="keys" value="order_id" placeholder="order_id"></label><div class="pair"><label>分组字段<input id="groups" value="region" placeholder="region"></label><label>求和字段<input id="sums" value="amount" placeholder="amount"></label></div><small>多个字段用英文逗号分隔；金额使用精确十进制计算。</small></div>
+<textarea id="custom" rows="8" hidden aria-label="自定义流水线">[{"type":"merge","schema_policy":"strict"},{"type":"deduplicate","keys":["order_id"],"keep":"first"},{"type":"aggregate","group_by":["region"],"sum":["amount"]}]</textarea>
+<label class="label" for="encoding">03 &nbsp; 输入格式</label><div class="pair"><label>编码<select id="encoding"><option value="utf-8-sig">UTF-8 / BOM</option><option value="gb18030">GB18030</option></select></label><label>分隔符<select id="delimiter"><option value=",">逗号 ,</option><option value=";">分号 ;</option><option value="tab">制表符 Tab</option><option value="|">竖线 |</option></select></label></div>
+<details><summary>演示账号令牌</summary><input type="password" id="token" placeholder="仅服务端配置令牌后需要" autocomplete="off"><small>令牌仅保存在当前标签页。</small></details>
+<button class="primary" id="submit" type="submit">提交后台任务 <span>↗</span></button>
+</form></section>
+<section class="right"><div class="card jobs"><div class="section-title"><h2>任务记录</h2><button id="refresh" class="quiet">刷新 ↻</button></div><div class="filter-row"><select id="status-filter" aria-label="筛选任务状态"><option value="">全部状态</option><option>QUEUED</option><option>RUNNING</option><option>RETRY_WAIT</option><option>SUCCEEDED</option><option>FAILED</option><option>CANCELLED</option></select><small>每 3 秒自动更新</small></div><div id="jobs"><p class="empty">正在载入任务…</p></div><button id="more" class="quiet" hidden>加载更多</button></div>
+<div class="card detail"><div class="section-title"><h2>执行详情</h2><span id="detail-label">LIVE LOG</span></div><div id="detail"><p class="empty">选择一个任务，查看处理阶段和执行日志。</p></div></div>
+<div class="note"><span>↳</span><p>结果只在成功提交后提供下载。运行中的取消请求，会在后台确认退出后显示为已取消。</p></div></section></div>
+<footer>DataFlow Jobs <span>CSV processing, with a reliable finish.</span></footer>
+</main><script src="/static/app.js" defer></script></body></html>

@@ -1,0 +1,118 @@
+x-app: &app
+  build: .
+  image: dataflow-jobs:local
+  environment: &environment
+    DF_DATABASE_URL: postgresql+psycopg://dataflow:dataflow@postgres:5432/dataflow
+    DF_STORAGE_ROOT: /data/storage
+    DF_EXECUTION_MODE: celery
+    DF_REDIS_URL: redis://redis:6379/0
+    DF_API_TOKEN: ${DF_API_TOKEN:-}
+    DF_LEASE_SECONDS: ${DF_LEASE_SECONDS:-30}
+    DF_MAX_ROWS: ${DF_MAX_ROWS:-1000000}
+    DF_MAX_UPLOAD_BYTES: ${DF_MAX_UPLOAD_BYTES:-104857600}
+    DF_INPUT_ARCHIVE_DAYS: ${DF_INPUT_ARCHIVE_DAYS:-30}
+    DF_EVENT_ARCHIVE_DAYS: ${DF_EVENT_ARCHIVE_DAYS:-30}
+    DF_MAINTENANCE_INTERVAL_SECONDS: ${DF_MAINTENANCE_INTERVAL_SECONDS:-3600}
+  volumes:
+    - job-data:/data
+  init: true
+  stop_grace_period: 40s
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: dataflow
+      POSTGRES_PASSWORD: dataflow
+      POSTGRES_DB: dataflow
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U dataflow -d dataflow"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+  redis:
+    image: redis:7-alpine
+    command: [redis-server, --appendonly, 'yes']
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+  migrate:
+    <<: *app
+    command: [alembic, upgrade, head]
+    depends_on:
+      postgres:
+        condition: service_healthy
+  api:
+    <<: *app
+    ports:
+      - "127.0.0.1:${DF_API_PORT:-8000}:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/health/ready')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+  worker:
+    <<: *app
+    command: [celery, -A, app.workers.celery_app:celery_app, worker, --loglevel=INFO, "--concurrency=${DF_WORKER_CONCURRENCY:-2}"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+  dispatcher:
+    <<: *app
+    command: [python, -m, app.scheduler.dispatcher]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+  maintenance:
+    <<: *app
+    command: [python, -m, app.scheduler.maintenance]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+  exporter:
+    <<: *app
+    profiles: [monitoring]
+    command: [python, -m, app.observability.exporter]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    profiles: [monitoring]
+    ports:
+      - "127.0.0.1:${DF_PROMETHEUS_PORT:-9090}:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus-data:/prometheus
+    command: [--config.file=/etc/prometheus/prometheus.yml, --storage.tsdb.retention.time=15d]
+    depends_on: [exporter, alertmanager]
+  alertmanager:
+    image: prom/alertmanager:v0.28.1
+    profiles: [monitoring]
+    ports:
+      - "127.0.0.1:${DF_ALERTMANAGER_PORT:-9093}:9093"
+    volumes:
+      - ./monitoring/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager-data:/alertmanager
+
+volumes:
+  job-data:
+  postgres-data:
+  redis-data:
+  prometheus-data:
+  alertmanager-data:

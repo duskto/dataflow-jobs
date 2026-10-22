@@ -1,0 +1,42 @@
+{
+  "platform": "Linux-6.18.26.1-microsoft-standard-WSL2-x86_64-with-glibc2.41",
+  "python": "3.13.5",
+  "cpu_count": 16,
+  "mode": "local SQLite, warm input, process startup included",
+  "memory_measurement": "Sum of worker RSS sampled every 50ms; shared pages count per process",
+  "results": [
+    {
+      "workers": 1,
+      "jobs": 4,
+      "input_bytes_per_job": 10485771,
+      "elapsed_seconds": 2.299,
+      "throughput_jobs_per_second": 1.7402,
+      "mean_queue_seconds": 1.018,
+      "mean_execution_seconds": 0.503,
+      "peak_worker_rss_kib_sampled": 75980,
+      "error_rate": 0.0
+    },
+    {
+      "workers": 2,
+      "jobs": 4,
+      "input_bytes_per_job": 10485771,
+      "elapsed_seconds": 1.379,
+      "throughput_jobs_per_second": 2.9009,
+      "mean_queue_seconds": 0.505,
+      "mean_execution_seconds": 0.535,
+      "peak_worker_rss_kib_sampled": 151720,
+      "error_rate": 0.0
+    },
+    {
+      "workers": 4,
+      "jobs": 4,
+      "input_bytes_per_job": 10485771,
+      "elapsed_seconds": 1.236,
+      "throughput_jobs_per_second": 3.2365,
+      "mean_queue_seconds": 0.306,
+      "mean_execution_seconds": 0.86,
+      "peak_worker_rss_kib_sampled": 291724,
+      "error_rate": 0.0
+    }
+  ]
+}

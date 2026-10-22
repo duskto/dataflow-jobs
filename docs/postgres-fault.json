@@ -1,0 +1,16 @@
+{
+  "project": "dataflow-verification",
+  "fault": "real PostgreSQL stop after fsynced result",
+  "sql_exception_mocking": false,
+  "file_written_before_outage": true,
+  "live_during_outage": 200,
+  "ready_during_outage": 503,
+  "job_read_during_outage": 500,
+  "fault_worker_exit_code": 1,
+  "status_before_recovery": "RUNNING",
+  "result_before_recovery": 409,
+  "final_status": "SUCCEEDED",
+  "attempts": 2,
+  "result_sha256": "c51ab3428b8372ffd2573e4f19957b25471f110484d80ffe9c3f8df53fc1cb11",
+  "result_matches_baseline": true
+}

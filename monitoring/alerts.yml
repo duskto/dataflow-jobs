@@ -1,0 +1,17 @@
+groups:
+  - name: dataflow
+    rules:
+      - alert: DataFlowExporterUnavailable
+        expr: up{job="dataflow"} == 0
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: "指标采集失败：检查数据库连接和 exporter"
+      - alert: DataFlowOperationalAlert
+        expr: dataflow_alert_active == 1
+        for: 30s
+        labels:
+          severity: warning
+        annotations:
+          summary: "DataFlow 运维异常：{{ $labels.code }}"
